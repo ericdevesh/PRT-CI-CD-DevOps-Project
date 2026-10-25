@@ -51,6 +51,7 @@ pipeline {
         stage('Deploy to Kubernetes') {
             steps {
                 withCredentials([
+                    usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKERHUB_USER', passwordVariable: 'DOCKERHUB_TOKEN'),
                     sshUserPrivateKey(credentialsId: 'k8s-ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')
                 ]) {
                     sh '''set -eu

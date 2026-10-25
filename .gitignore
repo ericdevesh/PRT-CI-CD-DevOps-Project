@@ -1,0 +1,9 @@
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/terraform.tfvars
+*.pem
+*.key
+.env
+screenshots/*
+!screenshots/README.md

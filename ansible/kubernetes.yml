@@ -1,0 +1,136 @@
+---
+- name: Install a single-node Kubernetes cluster on k8s-node
+  hosts: k8s_node
+  become: true
+  tasks:
+    - name: Install base packages
+      ansible.builtin.apt:
+        name: [apt-transport-https, ca-certificates, curl, gpg, containerd]
+        state: present
+        update_cache: true
+    - name: Disable swap now
+      ansible.builtin.command: swapoff -a
+      changed_when: false
+    - name: Disable swap persistently
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^(?!#)(.*\s+swap\s+.*)$'
+        replace: '# \1'
+    - name: Configure kernel modules
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        mode: '0644'
+        content: |
+          overlay
+          br_netfilter
+    - name: Load overlay module
+      ansible.builtin.command: modprobe overlay
+      changed_when: false
+    - name: Load br_netfilter module
+      ansible.builtin.command: modprobe br_netfilter
+      changed_when: false
+    - name: Apply Kubernetes network settings
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+        mode: '0644'
+        content: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+    - name: Apply sysctl
+      ansible.builtin.command: sysctl --system
+      changed_when: false
+    - name: Create containerd configuration
+      ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+    - name: Enable systemd cgroups
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+    - name: Restart containerd
+      ansible.builtin.systemd:
+        name: containerd
+        enabled: true
+        state: restarted
+    - name: Create Kubernetes keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+    - name: Add Kubernetes signing key
+      ansible.builtin.shell: |
+        set -o pipefail
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.37/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        executable: /bin/bash
+    - name: Add Kubernetes apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.37/deb/ /"
+        filename: kubernetes
+        state: present
+    - name: Install kubelet kubeadm kubectl
+      ansible.builtin.apt:
+        name: [kubelet, kubeadm, kubectl]
+        state: present
+        update_cache: true
+    - name: Hold Kubernetes packages
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop: [kubelet, kubeadm, kubectl]
+    - name: Start kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: true
+        state: started
+    - name: Initialize the cluster
+      ansible.builtin.command: kubeadm init --pod-network-cidr=10.244.0.0/16
+      args:
+        creates: /etc/kubernetes/admin.conf
+    - name: Create kubeconfig directory
+      ansible.builtin.file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+    - name: Copy admin kubeconfig
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ubuntu/.kube/config
+        remote_src: true
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+    - name: Apply Flannel CNI
+      become_user: ubuntu
+      ansible.builtin.command: kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      register: flannel_apply
+      changed_when: "'created' in flannel_apply.stdout or 'configured' in flannel_apply.stdout"
+    - name: Allow pods on control-plane node
+      ansible.builtin.command: kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      failed_when: false
+      changed_when: false
+    - name: Wait for node to become Ready
+      become_user: ubuntu
+      ansible.builtin.command: kubectl wait --for=condition=Ready nodes --all --timeout=240s
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      changed_when: false
+    - name: Show cluster status
+      become_user: ubuntu
+      ansible.builtin.shell: kubectl get nodes -o wide && kubectl get pods -A
+      environment:
+        KUBECONFIG: /home/ubuntu/.kube/config
+      changed_when: false
+      register: cluster_status
+    - name: Display cluster status
+      ansible.builtin.debug:
+        var: cluster_status.stdout_lines

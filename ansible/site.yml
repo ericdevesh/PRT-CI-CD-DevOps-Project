@@ -1,0 +1,67 @@
+---
+- name: Install Java and Jenkins on ci-master
+  hosts: ci_master
+  become: true
+  tasks:
+    - name: Install Java and prerequisites
+      ansible.builtin.apt:
+        name: [fontconfig, openjdk-21-jre, wget, curl, gnupg, git]
+        state: present
+        update_cache: true
+    - name: Create apt keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+    - name: Download Jenkins signing key
+      ansible.builtin.get_url:
+        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key
+        dest: /etc/apt/keyrings/jenkins-keyring.asc
+        mode: '0644'
+    - name: Add Jenkins LTS repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/"
+        filename: jenkins
+        state: present
+    - name: Install Jenkins
+      ansible.builtin.apt:
+        name: jenkins
+        state: present
+        update_cache: true
+    - name: Enable and start Jenkins
+      ansible.builtin.systemd:
+        name: jenkins
+        enabled: true
+        state: started
+
+- name: Install Java and Docker on ci-agent
+  hosts: ci_agent
+  become: true
+  tasks:
+    - name: Install Java and prerequisites
+      ansible.builtin.apt:
+        name: [openjdk-21-jre, ca-certificates, curl]
+        state: present
+        update_cache: true
+    - name: Download Docker installer
+      ansible.builtin.get_url:
+        url: https://get.docker.com
+        dest: /tmp/get-docker.sh
+        mode: '0755'
+    - name: Install Docker Engine
+      ansible.builtin.command: sh /tmp/get-docker.sh
+      args:
+        creates: /usr/bin/docker
+    - name: Enable and start Docker
+      ansible.builtin.systemd:
+        name: docker
+        enabled: true
+        state: started
+    - name: Allow Ubuntu user to run Docker
+      ansible.builtin.user:
+        name: ubuntu
+        groups: docker
+        append: true
+    - name: Verify Docker installation
+      ansible.builtin.command: docker --version
+      changed_when: false
